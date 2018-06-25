@@ -195,7 +195,7 @@ class ProgressiveUp(RoundedJob):
 
         return finalExpWrapper
 
-def logAssemblyStats(job, message, name, sequenceID):
+def logAssemblyStats(job, message, name, sequenceID, preemptable=True):
     sequenceFile = job.fileStore.readGlobalFile(sequenceID)
     analysisString = cactus_call(parameters=["cactus_analyseAssembly", sequenceFile], check_output=True)
     job.fileStore.logToMaster("%s, got assembly stats for genome %s: %s" % (message, name, analysisString))
@@ -358,7 +358,11 @@ def setupBinaries(options):
         jobStoreType, locator = Toil.parseLocator(options.jobStore)
         if jobStoreType != "file":
             raise RuntimeError("Singularity mode is only supported when using the FileJobStore.")
-        imgPath = os.path.join(os.path.abspath(locator), "cactus.img")
+        # When SINGULARITY_CACHEDIR is set, singularity will refuse to store images in the current directory
+        if 'SINGULARITY_CACHEDIR' in os.environ:
+            imgPath = os.path.join(os.environ['SINGULARITY_CACHEDIR'], "cactus.img")
+        else:
+            imgPath = os.path.join(os.path.abspath(locator), "cactus.img")
         os.environ["CACTUS_SINGULARITY_IMG"] = imgPath
 
 def importSingularityImage():
@@ -376,6 +380,8 @@ def importSingularityImage():
         # point to a path instead of a name in the CWD. So we change
         # to the proper directory manually, then change back after the
         # image is pulled.
+        # NOTE: singularity writes images in the current directory only
+        #       when SINGULARITY_CACHEDIR is not set
         oldCWD = os.getcwd()
         os.chdir(os.path.dirname(imgPath))
         # --size is deprecated starting in 2.4, but is needed for 2.3 support. Keeping it in for now.
@@ -423,7 +429,15 @@ def main():
     # methods like readGlobalFileStream don't support forced
     # reads directly from the job store rather than from cache.
     options.disableCaching = True
-
+    # Job chaining breaks service termination timing, causing unused
+    # databases to accumulate and waste memory for no reason.
+    options.disableChaining = True
+    # The default deadlockWait is currently 60 seconds. This can cause
+    # issues if the database processes take a while to actually begin
+    # after they're issued. Change it to at least an hour so that we
+    # don't preemptively declare a deadlock.
+    if options.deadlockWait is None or options.deadlockWait < 3600:
+        options.deadlockWait = 3600
     if options.retryCount is None:
         # If the user didn't specify a retryCount value, make it 5
         # instead of Toil's default (1).

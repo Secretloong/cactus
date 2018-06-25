@@ -943,7 +943,8 @@ def cactus_call(tool=None,
                 soft_timeout=None,
                 job_name=None,
                 features=None,
-                fileStore=None):
+                fileStore=None,
+                swallowStdErr=False):
     mode = os.environ.get("CACTUS_BINARIES_MODE", "docker")
 
     if dockstore is None:
@@ -984,7 +985,8 @@ def cactus_call(tool=None,
     _log.info("Running the command %s" % call)
     process = subprocess32.Popen(call, shell=shell,
                                  stdin=stdinFileHandle, stdout=stdoutFileHandle,
-                                 stderr=sys.stderr, bufsize=-1)
+                                 stderr=subprocess32.PIPE if swallowStdErr else sys.stderr,
+                                 bufsize=-1)
 
     if server:
         return process
@@ -1070,6 +1072,11 @@ class RoundedJob(Job):
         if bytesRequirement % self.roundingAmount == 0:
             return bytesRequirement
         return (bytesRequirement // self.roundingAmount + 1) * self.roundingAmount
+
+    def _runner(self, jobGraph, jobStore, fileStore):
+        if jobStore.config.workDir is not None:
+            os.environ['TMPDIR'] = fileStore.getLocalTempDir()
+        super(RoundedJob, self)._runner(jobGraph=jobGraph, jobStore=jobStore, fileStore=fileStore)
 
 def readGlobalFileWithoutCache(fileStore, jobStoreID):
     """Reads a jobStoreID into a file and returns it, without touching
