@@ -1,5 +1,5 @@
-rootPath = ../
-include ../include.mk
+rootPath = ..
+include ${rootPath}/include.mk
 
 #host=kolossus-10
 #batchSystem = parasol 
@@ -24,18 +24,21 @@ jobTree=${tempDir}/jobTree
 log = ${tempDir}/log.txt
 databaseDir=${tempDir}/testDb
 
-all : ${binPath}/dbTestScript 
+all: all_libs all_progs
+all_libs: 
+all_progs: all_libs
+	${MAKE} ${binPath}/dbTestScript 
 
 ${binPath}/dbTestScript  : ${basicLibsDependencies} *.c
 	${cxx} ${cflags} -I inc -I${libPath} -Wno-error -o ${binPath}/dbTestScript *.c ${basicLibs}
-	
+
 clean :
 	rm -rf ${binPath}/dbTestScript
 
 test :
 	ktserver -log ${log} -host ${host} -port ${port} ${databaseOptions} &
 	rm -rf ${databaseDir} ${jobTree}
-	python dbTestScript.py --maxThreads=${maxThreads} --parasolCommand="${parasolCommand}" --batchSystem ${batchSystem} --logLevel DEBUG --jobTree ${jobTree} --stats --keysPerJob ${keysPerJob} --totalJobs ${totalJobs} --host ${host} --port ${port} --databaseDir ${databaseDir} --databaseOption "${databaseOptions}" --minRecordSize ${minRecordSize} --maxRecordSize ${maxRecordSize}
+	${PYTHON} dbTestScript.py --maxThreads=${maxThreads} --parasolCommand="${parasolCommand}" --batchSystem ${batchSystem} --logLevel DEBUG --jobTree ${jobTree} --stats --keysPerJob ${keysPerJob} --totalJobs ${totalJobs} --host ${host} --port ${port} --databaseDir ${databaseDir} --databaseOption "${databaseOptions}" --minRecordSize ${minRecordSize} --maxRecordSize ${maxRecordSize}
 	jobTreeStats --jobTree ${jobTree} --outputFile ./jobTreeStatsTest.xml
 	ktremotemgr report -host ${host} -port ${port}
 	rm -rf ${databaseDir} ${jobTree} ${log}

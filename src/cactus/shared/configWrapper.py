@@ -1,11 +1,11 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #Copyright (C) 2011 by Glenn Hickey
 #
 #Released under the MIT license, see LICENSE.txt
 
 """ Interface to the cactus config xml file used
-to read the progressive-related fields. it's all 
+to read the progressive-related fields. it's all
 considered optional, with default stored as static
 members of the configwrapper class
 
@@ -18,7 +18,6 @@ from cactus.shared.common import getOptionalAttrib
 
 class ConfigWrapper:
     defaultOutgroupStrategy = 'none'
-    defaultSubtreeSize = 2
     defaultDoSelf = 'false'
     defaultCoverageFraction = 0
     defaultSingleCopyStrategy = 'none'
@@ -27,36 +26,32 @@ class ConfigWrapper:
     defaultOutgroupAncestorQualityFraction = 0.75
     defaultMaxParallelSubtrees = 3
     defaultMaxNumOutgroups = 1
-    
+
     def __init__(self, xmlRoot):
         self.xmlRoot = xmlRoot
 
     def writeXML(self, path):
         xmlFile = open(path, "w")
-        xmlString = ET.tostring(self.xmlRoot)
+        xmlString = ET.tostring(self.xmlRoot, encoding='unicode')
         xmlString = xmlString.replace("\n", "")
         xmlString = xmlString.replace("\t", "")
         xmlString = minidom.parseString(xmlString).toprettyxml()
         xmlFile.write(xmlString)
         xmlFile.close()
-    
-    def setReferenceName(self, name):
-        refElem = self.xmlRoot.find("reference")
-        refElem.attrib["reference"] = name
-        
+
     def getMCElem(self):
         return self.xmlRoot.find("multi_cactus")
-    
+
     def getOutgroupElem(self):
         mcElem = self.getMCElem()
         if mcElem is not None:
             return mcElem.find("outgroup")
-    
+
     def getDecompositionElem(self):
         mcElem = self.getMCElem()
         if mcElem is not None:
             return mcElem.find("decomposition")
-    
+
     def getOutgroupStrategy(self):
         ogElem = self.getOutgroupElem()
         strategy = self.defaultOutgroupStrategy
@@ -66,7 +61,7 @@ class ConfigWrapper:
             strategy == "greedyLeaves" or strategy == "greedyPreference" or \
             strategy == "dynamic"
         return strategy
-    
+
     def getOutgroupThreshold(self):
         ogElem = self.getOutgroupElem()
         threshold = self.defaultOutgroupThreshold
@@ -80,8 +75,6 @@ class ConfigWrapper:
         ogElem = self.getOutgroupElem()
         fraction = self.defaultOutgroupAncestorQualityFraction
         if (ogElem is not None and\
-            "strategy" in ogElem.attrib and\
-            ogElem.attrib["strategy"] == "greedy" and\
             "ancestor_quality_fraction" in ogElem.attrib and\
             ogElem.attrib["ancestor_quality_fraction"].lower() != 'none'):
             fraction = float(ogElem.attrib["ancestor_quality_fraction"])
@@ -95,20 +88,7 @@ class ConfigWrapper:
             "max_num_outgroups" in ogElem.attrib):
             maxNumOutgroups = int(ogElem.attrib["max_num_outgroups"])
         return maxNumOutgroups
-    
-    def getSubtreeSize(self):
-        decompElem = self.getDecompositionElem()
-        subtreeSize = self.defaultSubtreeSize
-        if decompElem is not None and "subtree_size" in decompElem.attrib:
-            subtreeSize = int(decompElem.attrib["subtree_size"])
-        assert subtreeSize > 1
-        return subtreeSize
 
-    def setSubtreeSize(self, subtreeSize):
-        decompElem = self.getDecompositionElem()
-        assert decompElem is not None
-        decompElem.attrib["subtree_size"] = str(subtreeSize)
-            
     def getDoTrimStrategy(self):
         trimBlastNode = findRequiredNode(self.xmlRoot, "trimBlast")
         if "doTrimStrategy" in trimBlastNode.attrib:
@@ -122,7 +102,7 @@ class ConfigWrapper:
             doSelf = decompElem.attrib["self_alignment"].lower()
         assert doSelf == "true" or doSelf == "false"
         return doSelf == "true"
-    
+
     def getDefaultInternalNodePrefix(self):
         decompElem = self.getDecompositionElem()
         prefix = self.defaultInternalNodePrefix
@@ -131,7 +111,7 @@ class ConfigWrapper:
             prefix = decompElem.attrib["default_internal_node_prefix"]
         assert len(prefix) > 0
         return prefix
-    
+
     def getBuildHal(self):
         halElem = self.xmlRoot.find("hal")
         if halElem is not None and "buildHal" in halElem.attrib:
@@ -173,22 +153,22 @@ class ConfigWrapper:
         assert decompElem is not None
         decompElem.attrib["max_parallel_subtrees"] = str(maxParallel)
 
-    def getKtserverMemory(self, default=sys.maxint):
+    def getKtserverMemory(self, default=sys.maxsize):
         ktServerElem = self.xmlRoot.find("ktserver")
         if ktServerElem is not None and "memory" in ktServerElem.attrib:
             return int(ktServerElem.attrib["memory"])
         return default
-    
-    def getKtserverCpu(self, default=sys.maxint):
+
+    def getKtserverCpu(self, default=sys.maxsize):
         ktServerElem = self.xmlRoot.find("ktserver")
         if ktServerElem is not None and "cpu" in ktServerElem.attrib:
             return int(ktServerElem.attrib["cpu"])
-        return default           
+        return default
 
     def getDefaultMemory(self):
         constantsElem = self.xmlRoot.find("constants")
         return int(constantsElem.attrib["defaultMemory"])
-    
+
     def getExportHalDisk(self):
         exportHalElem = self.xmlRoot.find("exportHal")
         return int(exportHalElem.attrib["disk"])
@@ -205,7 +185,7 @@ class ConfigWrapper:
         if defines != None:
             replaceAllConstants(self.xmlRoot, defines)
             constants.remove(defines)
-    
+
     def substituteAllDivergenceContolledParametersWithLiterals(self, maxDivergence):
         constants = findRequiredNode(self.xmlRoot, "constants")
         divergences = constants.find("divergences")
@@ -217,10 +197,10 @@ class ConfigWrapper:
                     if child.tag == "divergence":
                         attribName = child.attrib["argName"]
                         arg = child.attrib["default"]
-                        divergence = sys.maxint
+                        divergence = sys.maxsize
                         if not useDefaultDivergences:
-                            for i in child.attrib.keys():
-                                if i in divergences.attrib.keys():
+                            for i in list(child.attrib.keys()):
+                                if i in list(divergences.attrib.keys()):
                                     j = float(divergences.attrib[i])
                                     if j < divergence and j >= maxDivergence:
                                         arg = child.attrib[i]
@@ -231,13 +211,13 @@ class ConfigWrapper:
                         replaceAllDivergenceParameters(child)
             replaceAllDivergenceParameters(self.xmlRoot)
         return messages
-    
+
     def turnAllModesOn(self):
         """Switches on check, normalisation etc. to use when debugging/testing
         """
         findRequiredNode(self.xmlRoot, "check").attrib["runCheck"] = "1"
         findRequiredNode(self.xmlRoot, "normal").attrib["iterations"] = "2"
-        
+
     def turnOffHeaderChecks(self):
         """Turns off the preprocessor stage that checks whether headers can be
         used in an assembly hub."""

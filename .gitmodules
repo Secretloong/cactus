@@ -1,23 +1,21 @@
 [submodule "submodules/pinchesAndCacti"]
 	path = submodules/pinchesAndCacti
-	url = http://github.com/ComparativeGenomicsToolkit/pinchesAndCacti
+	url = https://github.com/ComparativeGenomicsToolkit/pinchesAndCacti
 [submodule "submodules/matchingAndOrdering"]
 	path = submodules/matchingAndOrdering
-	url = http://github.com/ComparativeGenomicsToolkit/matchingAndOrdering
+	url = https://github.com/ComparativeGenomicsToolkit/matchingAndOrdering
 [submodule "submodules/cPecan"]
 	path = submodules/cPecan
-	url = http://github.com/benedictpaten/cPecan
+	url = https://github.com/ComparativeGenomicsToolkit/cPecan
 [submodule "submodules/sonLib"]
 	path = submodules/sonLib
-	url = http://github.com/ComparativeGenomicsToolkit/sonLib
-[submodule "submodules/hdf5"]
-	path = submodules/hdf5
-	url = https://github.com/UCSCReconGroup/hdf5
+	url = https://github.com/ComparativeGenomicsToolkit/sonLib
 [submodule "submodules/hal"]
 	path = submodules/hal
-	url = https://github.com/glennhickey/hal
+	url = https://github.com/ComparativeGenomicsToolkit/hal
 [submodule "submodules/cactus2hal"]
 	path = submodules/cactus2hal
-	url = https://github.com/adderan/cactus2hal
-[submodule "hal"]
-	branch = master
+	url = https://github.com/ComparativeGenomicsToolkit/cactus2hal
+[submodule "submodules/kyoto"]
+	path = submodules/kyoto
+	url = https://github.com/ComparativeGenomicsToolkit/kyoto.git

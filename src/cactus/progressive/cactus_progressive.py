@@ -1,19 +1,21 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #Copyright (C) 2011 by Glenn Hickey
 #
 #Released under the MIT license, see LICENSE.txt
-#!/usr/bin/env python
 
 """Wrapper to run the cactus_workflow progressively, using the input species tree as a guide
 
-tree.  
+tree.
 """
 
 import os
 import xml.etree.ElementTree as ET
+import timeit
 from argparse import ArgumentParser
+from base64 import b64encode
 from subprocess import check_call
+from subprocess import CalledProcessError
 
 from toil.lib.bioio import getTempFile
 
@@ -27,6 +29,7 @@ from cactus.shared.common import catFiles
 from cactus.shared.common import cactus_call
 from cactus.shared.common import RoundedJob
 from cactus.shared.common import getDockerImage
+from cactus.shared.version import cactus_commit
 
 from toil.job import Job
 from toil.common import Toil
@@ -52,7 +55,7 @@ class ProgressiveDown(RoundedJob):
         self.project = project
         self.event = event
         self.schedule = schedule
-    
+
     def run(self, fileStore):
         self.configNode = ET.parse(fileStore.readGlobalFile(self.project.getConfigID())).getroot()
         self.configWrapper = ConfigWrapper(self.configNode)
@@ -70,6 +73,7 @@ class ProgressiveDown(RoundedJob):
 
         return self.addFollowOn(ProgressiveNext(self.options, self.project, self.event,
                                                               self.schedule, depProjects, memory=self.configWrapper.getDefaultMemory())).rv()
+
 class ProgressiveNext(RoundedJob):
     def __init__(self, options, project, event, schedule, depProjects, memory=None, cores=None):
         RoundedJob.__init__(self, memory=memory, cores=cores, preemptable=True)
@@ -78,7 +82,7 @@ class ProgressiveNext(RoundedJob):
         self.event = event
         self.schedule = schedule
         self.depProjects = depProjects
-    
+
     def run(self, fileStore):
         self.configNode = ET.parse(fileStore.readGlobalFile(self.project.getConfigID())).getroot()
         self.configWrapper = ConfigWrapper(self.configNode)
@@ -87,14 +91,14 @@ class ProgressiveNext(RoundedJob):
         fileStore.logToMaster("Project has %i dependencies" % len(self.depProjects))
         for projName in self.depProjects:
             depProject = self.depProjects[projName]
-            for expName in depProject.expIDMap: 
+            for expName in depProject.expIDMap:
                 expID = depProject.expIDMap[expName]
                 experiment = ExperimentWrapper(ET.parse(fileStore.readGlobalFile(expID)).getroot())
                 fileStore.logToMaster("Reference ID for experiment %s: %s" % (expName, experiment.getReferenceID()))
                 if experiment.getReferenceID():
                     self.project.expIDMap[expName] = expID
                     self.project.outputSequenceIDMap[expName] = experiment.getReferenceID()
-                        
+
         eventExpWrapper = None
         logger.info("Progressive Next: " + self.event)
         if not self.schedule.isVirtual(self.event):
@@ -109,7 +113,7 @@ class ProgressiveOut(RoundedJob):
         self.event = event
         self.eventExpWrapper = eventExpWrapper
         self.schedule = schedule
-        
+
     def run(self, fileStore):
         self.configNode = ET.parse(fileStore.readGlobalFile(self.project.getConfigID())).getroot()
         self.configWrapper = ConfigWrapper(self.configNode)
@@ -126,14 +130,14 @@ class ProgressiveOut(RoundedJob):
                                                     self.schedule, memory=self.configWrapper.getDefaultMemory())).rv()
 
         return self.project
-    
+
 class ProgressiveUp(RoundedJob):
     def __init__(self, options, project, event, memory=None, cores=None):
         RoundedJob.__init__(self, memory=memory, cores=cores, preemptable=True)
         self.options = options
         self.project = project
         self.event = event
-    
+
     def run(self, fileStore):
         self.configNode = ET.parse(fileStore.readGlobalFile(self.project.getConfigID())).getroot()
         self.configWrapper = ConfigWrapper(self.configNode)
@@ -153,20 +157,17 @@ class ProgressiveUp(RoundedJob):
         tree = experiment.getTree()
         seqNames = []
         for node in tree.postOrderTraversal():
-            if tree.isLeaf(node):
-                name = tree.getName(node)
+            name = tree.getName(node)
+            if tree.isLeaf(node) or (name == experiment.getRootGenome() and experiment.isRootReconstructed() == False):
                 seqIDMap[name] = self.project.outputSequenceIDMap[name]
                 seqNames.append(name)
         logger.info("Sequences in progressive, %s: %s" % (self.event, seqNames))
-            
+
         experimentFile = fileStore.getLocalTempFile()
         experiment.writeXML(experimentFile)
         self.options.experimentFileID = fileStore.writeGlobalFile(experimentFile)
 
         # take union of command line options and config options for hal and reference
-        if self.options.buildReference == False:
-            refNode = findRequiredNode(configXml, "reference")
-            self.options.buildReference = getOptionalAttrib(refNode, "buildReference", bool, False)
         halNode = findRequiredNode(configXml, "hal")
         if self.options.buildHal == False:
             self.options.buildHal = getOptionalAttrib(halNode, "buildHal", bool, False)
@@ -179,7 +180,6 @@ class ProgressiveUp(RoundedJob):
         workFlowArgs = CactusWorkflowArguments(self.options, experimentFile=experimentFile, configNode=configNode, seqIDMap = seqIDMap)
 
         # copy over the options so we don't trail them around
-        workFlowArgs.buildReference = self.options.buildReference
         workFlowArgs.buildHal = self.options.buildHal
         workFlowArgs.buildFasta = self.options.buildFasta
         workFlowArgs.globalLeafEventSet = self.options.globalLeafEventSet
@@ -205,14 +205,16 @@ class RunCactusPreprocessorThenProgressiveDown(RoundedJob):
         RoundedJob.__init__(self, memory=memory, cores=cores, preemptable=True)
         self.options = options
         self.project = project
-        
+
     def run(self, fileStore):
         self.configNode = ET.parse(fileStore.readGlobalFile(self.project.getConfigID())).getroot()
         self.configWrapper = ConfigWrapper(self.configNode)
         self.configWrapper.substituteAllPredefinedConstantsWithLiterals()
 
+        fileStore.logToMaster("Using the following configuration:\n%s" % ET.tostring(self.configNode, encoding='unicode'))
+
         # Log the stats for the un-preprocessed assemblies
-        for name, sequence in self.project.getInputSequenceIDMap().items():
+        for name, sequence in list(self.project.inputSequenceIDMap.items()):
             self.addChildJobFn(logAssemblyStats, "Before preprocessing", name, sequence)
 
         # Create jobs to create the output sequences
@@ -222,8 +224,11 @@ class RunCactusPreprocessorThenProgressiveDown(RoundedJob):
         ConfigWrapper(configNode).substituteAllPredefinedConstantsWithLiterals() #This is necessary..
         #Add the preprocessor child job. The output is a job promise value that will be
         #converted into a list of the IDs of the preprocessed sequences in the follow on job.
-        preprocessorJob = self.addChild(CactusPreprocessor(self.project.getInputSequenceIDs(), configNode))
-        self.project.setOutputSequenceIDs([preprocessorJob.rv(i) for i in range(len(self.project.getInputSequenceIDs()))])
+        preprocessorJob = self.addChild(CactusPreprocessor(list(self.project.inputSequenceIDMap.values()), configNode))
+        rvs = [preprocessorJob.rv(i) for i in range(len(self.project.inputSequenceIDMap))]
+        fileStore.logToMaster('input sequence IDs: %s' % self.project.inputSequenceIDMap)
+        for genome, rv in zip(list(self.project.inputSequenceIDMap.keys()), rvs):
+            self.project.outputSequenceIDMap[genome] = rv
 
         #Now build the progressive-down job
         schedule = Schedule()
@@ -252,12 +257,12 @@ class RunCactusPreprocessorThenProgressiveDown2(RoundedJob):
 
         # Save preprocessed sequences
         if self.options.intermediateResultsUrl is not None:
-            preprocessedSequences = self.project.getOutputSequenceIDMap()
-            for genome, seqID in preprocessedSequences.items():
+            preprocessedSequences = self.project.outputSequenceIDMap
+            for genome, seqID in list(preprocessedSequences.items()):
                 fileStore.exportFile(seqID, self.options.intermediateResultsUrl + '-preprocessed-' + genome)
 
         # Log the stats for the preprocessed assemblies
-        for name, sequence in self.project.getOutputSequenceIDMap().items():
+        for name, sequence in list(self.project.outputSequenceIDMap.items()):
             self.addChildJobFn(logAssemblyStats, "After preprocessing", name, sequence)
 
         project = self.addChild(ProgressiveDown(options=self.options, project=self.project, event=self.event, schedule=self.schedule, memory=self.configWrapper.getDefaultMemory())).rv()
@@ -286,7 +291,7 @@ def exportHal(job, project, event=None, cacheBytes=None, cacheMDC=None, cacheRDC
             experimentFilePath = job.fileStore.readGlobalFile(project.expIDMap[genomeName])
             experiment = ExperimentWrapper(ET.parse(experimentFilePath).getroot())
 
-            outgroups = experiment.getOutgroupEvents()
+            outgroups = experiment.getOutgroupGenomes()
             experiment.setConfigPath(job.fileStore.readGlobalFile(experiment.getConfigID()))
             expTreeString = NXNewick().writeString(experiment.getTree(onlyThisSubtree=True))
             assert len(expTreeString) > 1
@@ -316,6 +321,10 @@ def exportHal(job, project, event=None, cacheBytes=None, cacheMDC=None, cacheRDC
 
             cactus_call(parameters=["halAppendCactusSubtree"] + args)
 
+    cactus_call(parameters=["halSetMetadata", HALPath, "CACTUS_COMMIT", cactus_commit])
+    with job.fileStore.readGlobalFileStream(project.configID) as configFile:
+        cactus_call(parameters=["halSetMetadata", HALPath, "CACTUS_CONFIG", b64encode(configFile.read()).decode()])
+
     return job.fileStore.writeGlobalFile(HALPath)
 
 def setupBinaries(options):
@@ -336,7 +345,7 @@ def setupBinaries(options):
         if find_executable('docker') is None:
             raise RuntimeError("The `docker` executable wasn't found on the "
                                "system. Please install Docker if possible, or "
-                               "use --binaryMode local and add cactus's bin "
+                               "use --binariesMode local and add cactus's bin "
                                "directory to your PATH.")
     # If running without Docker, verify that we can find the Cactus executables
     elif mode == "local":
@@ -356,38 +365,54 @@ def setupBinaries(options):
     else:
         assert mode == "singularity"
         jobStoreType, locator = Toil.parseLocator(options.jobStore)
-        if jobStoreType != "file":
-            raise RuntimeError("Singularity mode is only supported when using the FileJobStore.")
-        # When SINGULARITY_CACHEDIR is set, singularity will refuse to store images in the current directory
-        if 'SINGULARITY_CACHEDIR' in os.environ:
-            imgPath = os.path.join(os.environ['SINGULARITY_CACHEDIR'], "cactus.img")
-        else:
-            imgPath = os.path.join(os.path.abspath(locator), "cactus.img")
-        os.environ["CACTUS_SINGULARITY_IMG"] = imgPath
+        if jobStoreType == "file":
+            # if not using a local jobStore, then don't set the `SINGULARITY_CACHEDIR`
+            # in this case, the image will be downloaded on each call
+            if options.containerImage:
+                imgPath = os.path.abspath(options.containerImage)
+                os.environ["CACTUS_USE_LOCAL_SINGULARITY_IMG"] = "1"
+            else:
+                # When SINGULARITY_CACHEDIR is set, singularity will refuse to store images in the current directory
+                if 'SINGULARITY_CACHEDIR' in os.environ:
+                    imgPath = os.path.join(os.environ['SINGULARITY_CACHEDIR'], "cactus.img")
+                else:
+                    imgPath = os.path.join(os.path.abspath(locator), "cactus.img")
+            os.environ["CACTUS_SINGULARITY_IMG"] = imgPath
 
-def importSingularityImage():
+def importSingularityImage(options):
     """Import the Singularity image from Docker if using Singularity."""
     mode = os.environ.get("CACTUS_BINARIES_MODE", "docker")
-    if mode == "singularity":
+    localImage = os.environ.get("CACTUS_USE_LOCAL_SINGULARITY_IMG", "0")
+    if mode == "singularity" and Toil.parseLocator(options.jobStore)[0] == "file":
         imgPath = os.environ["CACTUS_SINGULARITY_IMG"]
-        # Singularity will complain if the image file already exists. Remove it.
-        try:
-            os.remove(imgPath)
-        except OSError:
-            # File doesn't exist
-            pass
-        # Singularity 2.4 broke the functionality that let --name
-        # point to a path instead of a name in the CWD. So we change
-        # to the proper directory manually, then change back after the
-        # image is pulled.
-        # NOTE: singularity writes images in the current directory only
-        #       when SINGULARITY_CACHEDIR is not set
-        oldCWD = os.getcwd()
-        os.chdir(os.path.dirname(imgPath))
-        # --size is deprecated starting in 2.4, but is needed for 2.3 support. Keeping it in for now.
-        check_call(["singularity", "pull", "--size", "2000", "--name", os.path.basename(imgPath),
-                    "docker://" + getDockerImage()])
-        os.chdir(oldCWD)
+        # If not using local image, pull the docker image
+        if localImage == "0":
+            # Singularity will complain if the image file already exists. Remove it.
+            try:
+                os.remove(imgPath)
+            except OSError:
+                # File doesn't exist
+                pass
+            # Singularity 2.4 broke the functionality that let --name
+            # point to a path instead of a name in the CWD. So we change
+            # to the proper directory manually, then change back after the
+            # image is pulled.
+            # NOTE: singularity writes images in the current directory only
+            #       when SINGULARITY_CACHEDIR is not set
+            oldCWD = os.getcwd()
+            os.chdir(os.path.dirname(imgPath))
+            # --size is deprecated starting in 2.4, but is needed for 2.3 support. Keeping it in for now.
+            try:
+                check_call(["singularity", "pull", "--size", "2000", "--name", os.path.basename(imgPath),
+                            "docker://" + getDockerImage()])
+            except CalledProcessError:
+                # Call failed, try without --size, required for singularity 3+
+                check_call(["singularity", "pull", "--name", os.path.basename(imgPath),
+                            "docker://" + getDockerImage()])
+            os.chdir(oldCWD)
+        else:
+            logger.info("Using pre-built singularity image: '{}'".format(imgPath))
+
 
 def main():
     parser = ArgumentParser()
@@ -410,15 +435,17 @@ def main():
                       "root for the alignment.  Any genomes not below this node "
                       "in the tree may be used as outgroups but will never appear"
                       " in the output.  If no root is specifed then the root"
-                      " of the tree is used. ", default=None)   
+                      " of the tree is used. ", default=None)
     parser.add_argument("--latest", dest="latest", action="store_true",
-                        help="Use the latest, locally-built docker container "
-                        "rather than pulling from quay.io")
+                        help="Use the latest version of the docker container "
+                        "rather than pulling one matching this version of cactus")
+    parser.add_argument("--containerImage", dest="containerImage", default=None,
+                        help="Use the the specified pre-built containter image "
+                        "rather than pulling one from quay.io")
     parser.add_argument("--binariesMode", choices=["docker", "local", "singularity"],
                         help="The way to run the Cactus binaries", default=None)
 
     options = parser.parse_args()
-    options.cactusDir = getTempDirectory()
 
     setupBinaries(options)
     setLoggingFromOptions(options)
@@ -443,44 +470,48 @@ def main():
         # instead of Toil's default (1).
         options.retryCount = 5
 
-    #Create the progressive cactus project 
-    projWrapper = ProjectWrapper(options)
-    projWrapper.writeXml()
+    start_time = timeit.default_timer()
+    runCactusProgressive(options)
+    end_time = timeit.default_timer()
+    run_time = end_time - start_time
+    logger.info("Cactus has finished after {} seconds".format(run_time))
 
-    pjPath = os.path.join(options.cactusDir, ProjectWrapper.alignmentDirName,
-                          '%s_project.xml' % ProjectWrapper.alignmentDirName)
-    assert os.path.exists(pjPath)
-
-    project = MultiCactusProject()
-
-    if not os.path.isdir(options.cactusDir):
-        os.makedirs(options.cactusDir)
-
+def runCactusProgressive(options):
     with Toil(options) as toil:
-        importSingularityImage()
+        importSingularityImage(options)
         #Run the workflow
         if options.restart:
             halID = toil.restart()
         else:
+            options.cactusDir = getTempDirectory()
+            #Create the progressive cactus project
+            projWrapper = ProjectWrapper(options)
+            projWrapper.writeXml()
+
+            pjPath = os.path.join(options.cactusDir, ProjectWrapper.alignmentDirName,
+                                  '%s_project.xml' % ProjectWrapper.alignmentDirName)
+            assert os.path.exists(pjPath)
+
+            project = MultiCactusProject()
+
+            if not os.path.isdir(options.cactusDir):
+                os.makedirs(options.cactusDir)
+
             project.readXML(pjPath)
             #import the sequences
-            seqIDs = []
-            for seq in project.getInputSequencePaths():
+            for genome, seq in list(project.inputSequenceMap.items()):
                 if os.path.isdir(seq):
                     tmpSeq = getTempFile()
                     catFiles([os.path.join(seq, subSeq) for subSeq in os.listdir(seq)], tmpSeq)
                     seq = tmpSeq
                 seq = makeURL(seq)
-                seqIDs.append(toil.importFile(seq))
-            project.setInputSequenceIDs(seqIDs)
-
+                project.inputSequenceIDMap[genome] = toil.importFile(seq)
 
             #import cactus config
             if options.configFile:
                 cactusConfigID = toil.importFile(makeURL(options.configFile))
             else:
                 cactusConfigID = toil.importFile(makeURL(project.getConfigPath()))
-            logger.info("Setting config id to: %s" % cactusConfigID)
             project.setConfigID(cactusConfigID)
 
             project.syncToFileStore(toil)

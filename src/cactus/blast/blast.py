@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #Copyright (C) 2009-2011 by Benedict Paten (benedictpaten@gmail.com)
 #
 #Released under the MIT license, see LICENSE.txt
@@ -24,7 +24,7 @@ from cactus.blast.upconvertCoordinates import upconvertCoords
 from cactus.blast.trimSequences import trimSequences
 
 class BlastOptions(object):
-    def __init__(self, chunkSize=10000000, overlapSize=10000, 
+    def __init__(self, chunkSize=10000000, overlapSize=10000,
                  lastzArguments="", compressFiles=True, realign=False, realignArguments="",
                  minimumSequenceLength=1, memory=None,
                  smallDisk = None,
@@ -45,7 +45,7 @@ class BlastOptions(object):
         """
         self.chunkSize = chunkSize
         self.overlapSize = overlapSize
-        
+
         self.realignArguments = realignArguments
         self.lastzArguments = lastzArguments
         self.realign = realign
@@ -70,7 +70,7 @@ class BlastSequencesAllAgainstAll(RoundedJob):
         disk = 4*sum([seqFileID.size for seqFileID in sequenceFileIDs1])
         cores = 1
         memory = blastOptions.memory
-        
+
         super(BlastSequencesAllAgainstAll, self).__init__(disk=disk, cores=cores, memory=memory, preemptable=True)
         self.sequenceFileIDs1 = sequenceFileIDs1
         self.blastOptions = blastOptions
@@ -79,8 +79,11 @@ class BlastSequencesAllAgainstAll(RoundedJob):
 
     def run(self, fileStore):
         sequenceFiles1 = [fileStore.readGlobalFile(fileID) for fileID in self.sequenceFileIDs1]
-        chunks = runGetChunks(sequenceFiles=sequenceFiles1, chunksDir=getTempDirectory(rootDir=fileStore.getLocalTempDir()), chunkSize = self.blastOptions.chunkSize, overlapSize=self.blastOptions.overlapSize)
-        assert len(chunks) > 0
+        chunks = runGetChunks(sequenceFiles=sequenceFiles1,
+                              chunksDir=getTempDirectory(rootDir=fileStore.getLocalTempDir()),
+                              chunkSize=self.blastOptions.chunkSize, overlapSize=self.blastOptions.overlapSize)
+        if len(chunks) == 0:
+            raise Exception("no chunks produced for files: {} ".format(sequenceFiles1))
         logger.info("Broken up the sequence files into individual 'chunk' files")
         chunkIDs = [fileStore.writeGlobalFile(chunk, cleanup=True) for chunk in chunks]
 
@@ -88,7 +91,7 @@ class BlastSequencesAllAgainstAll(RoundedJob):
         offDiagonalResultsID = self.addChild(MakeOffDiagonalBlasts(self.blastOptions, chunkIDs)).rv()
         logger.debug("Collating the blasts after blasting all-against-all")
         return self.addFollowOn(CollateBlasts(self.blastOptions, [diagonalResultsID, offDiagonalResultsID])).rv()
-        
+
 class MakeSelfBlasts(ChildTreeJob):
     """Breaks up the inputs into bits and builds a bunch of alignment jobs.
     """
@@ -102,7 +105,7 @@ class MakeSelfBlasts(ChildTreeJob):
         #Avoid compression if just one chunk
         self.blastOptions.compressFiles = self.blastOptions.compressFiles and len(self.chunkIDs) > 2
         resultsIDs = []
-        for i in xrange(len(self.chunkIDs)):
+        for i in range(len(self.chunkIDs)):
             resultsIDs.append(self.addChild(RunSelfBlast(self.blastOptions, self.chunkIDs[i])).rv())
         logger.info("Made the list of self blasts")
         #Setup job to make all-against-all blasts
@@ -120,8 +123,8 @@ class MakeOffDiagonalBlasts(ChildTreeJob):
         def run(self, fileStore):
             resultsIDs = []
             #Make the list of blast jobs.
-            for i in xrange(0, len(self.chunkIDs)):
-                for j in xrange(i+1, len(self.chunkIDs)):
+            for i in range(0, len(self.chunkIDs)):
+                for j in range(i+1, len(self.chunkIDs)):
                     resultsIDs.append(self.addChild(RunBlast(blastOptions=self.blastOptions, seqFileID1=self.chunkIDs[i], seqFileID2=self.chunkIDs[j])).rv())
 
             return self.addFollowOn(CollateBlasts(self.blastOptions, resultsIDs)).rv()
@@ -133,7 +136,7 @@ class BlastSequencesAgainstEachOther(ChildTreeJob):
         disk = 3*(sum([seqID.size for seqID in sequenceFileIDs1]) + sum([seqID.size for seqID in sequenceFileIDs2]))
         cores = 1
         memory = blastOptions.memory
-        
+
         super(BlastSequencesAgainstEachOther, self).__init__(disk=disk, cores=cores, memory=memory, preemptable=True)
         self.sequenceFileIDs1 = sequenceFileIDs1
         self.sequenceFileIDs2 = sequenceFileIDs2
@@ -199,8 +202,8 @@ class BlastIngroupsAndOutgroups(RoundedJob):
             alignmentsID = self.addFollowOn(CollateBlasts(blastOptions=self.blastOptions, resultsFileIDs=[ingroupAlignmentsID, outgroupAlignmentsID])).rv()
         else:
             alignmentsID = ingroupAlignmentsID
-            outgroupFragmentIDs = None
-            ingroupCoverageIDs = None
+            outgroupFragmentIDs = []
+            ingroupCoverageIDs = []
 
         return (alignmentsID, outgroupFragmentIDs, ingroupCoverageIDs)
 
@@ -384,19 +387,19 @@ def decompressFastaFile(fileName, tempFileName):
     """
     system("bunzip2 --stdout %s > %s" % (fileName, tempFileName))
     return tempFileName
-        
+
 class RunSelfBlast(RoundedJob):
     """Runs blast as a job.
     """
     def __init__(self, blastOptions, seqFileID):
         disk = 3*seqFileID.size
         memory = 3*seqFileID.size
-        
+
         super(RunSelfBlast, self).__init__(memory=memory, disk=disk, preemptable=True)
         self.blastOptions = blastOptions
         self.seqFileID = seqFileID
-    
-    def run(self, fileStore):   
+
+    def run(self, fileStore):
         blastResultsFile = fileStore.getLocalTempFile()
         seqFile = fileStore.readGlobalFile(self.seqFileID)
         runSelfLastz(seqFile, blastResultsFile, lastzArguments=self.blastOptions.lastzArguments)
@@ -416,7 +419,7 @@ class RunSelfBlast(RoundedJob):
             seqFile = compressFastaFile(seqFile)
         logger.info("Ran the self blast okay")
         return fileStore.writeGlobalFile(resultsFile)
-    
+
 class RunBlast(RoundedJob):
     """Runs blast as a job.
     """
@@ -431,7 +434,7 @@ class RunBlast(RoundedJob):
         self.blastOptions = blastOptions
         self.seqFileID1 = seqFileID1
         self.seqFileID2 = seqFileID2
-    
+
     def run(self, fileStore):
         seqFile1 = fileStore.readGlobalFile(self.seqFileID1)
         seqFile2 = fileStore.readGlobalFile(self.seqFileID2)
@@ -447,7 +450,7 @@ class RunBlast(RoundedJob):
                              outputAlignmentsFile=realignResultsFile,
                              realignArguments=self.blastOptions.realignArguments)
             blastResultsFile = realignResultsFile
-            
+
         resultsFile = fileStore.getLocalTempFile()
         cactus_call(parameters=["cactus_blast_convertCoordinates",
                                 blastResultsFile,
@@ -465,7 +468,7 @@ class CollateBlasts(RoundedJob):
     def run(self, fileStore):
         return self.addFollowOn(CollateBlasts2(self.blastOptions, self.resultsFileIDs)).rv()
 
-class CollateBlasts2(RoundedJob):
+class CollateBlasts2(ChildTreeJob):
     """Collates all the blasts into a single alignments file.
     """
     def __init__(self, blastOptions, resultsFileIDs):
@@ -473,7 +476,9 @@ class CollateBlasts2(RoundedJob):
         memory = blastOptions.memory
         super(CollateBlasts2, self).__init__(memory=memory, disk=disk, preemptable=True)
         self.resultsFileIDs = resultsFileIDs
-    
+        # it's slow to run fileStore.deleteGlobalFile, so we do it in parallel batches
+        self.delete_batch_size = 50
+
     def run(self, fileStore):
         logger.info("Results IDs: %s" % self.resultsFileIDs)
         resultsFiles = [readGlobalFileWithoutCache(fileStore, fileID) for fileID in self.resultsFileIDs]
@@ -481,9 +486,20 @@ class CollateBlasts2(RoundedJob):
         catFiles(resultsFiles, collatedResultsFile)
         logger.info("Collated the alignments to the file: %s",  collatedResultsFile)
         collatedResultsID = fileStore.writeGlobalFile(collatedResultsFile)
-        for resultsFileID in self.resultsFileIDs:
-            fileStore.deleteGlobalFile(resultsFileID)
+        for i in range(0, len(self.resultsFileIDs), self.delete_batch_size):
+            self.addChild(DeleteFileIDs(self.resultsFileIDs[i:i+self.delete_batch_size]))        
         return collatedResultsID
+
+class DeleteFileIDs(RoundedJob):
+    """Deletes some files from the file store
+    """
+    def __init__(self, fileIDs):
+        super(DeleteFileIDs, self).__init__(preemptable=True)
+        self.fileIDs = fileIDs
+        
+    def run(self, fileStore):
+        for fileID in self.fileIDs:
+            fileStore.deleteGlobalFile(fileID)        
 
 def sequenceLength(sequenceFile):
     """Get the total # of bp from a fasta file."""
@@ -510,7 +526,7 @@ def calculateCoverage(sequenceFile, cigarFile, outputFile, fromGenome=None, dept
         cigarFile, sequenceFile, outputFile))
     args = [sequenceFile, cigarFile]
     if fromGenome is not None:
-        args += ["--fromGenome", fromGenome]
+        args += ["--from", fromGenome]
     if depthById:
         args += ["--depthById"]
     cactus_call(outfile=outputFile, work_dir=work_dir,
@@ -527,4 +543,3 @@ def subtractBed(bed1, bed2, destBed):
                     parameters=["subtract",
                                 "-a", bed1,
                                 "-b", bed2])
-

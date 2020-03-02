@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #Copyright (C) 2011 by Glenn Hickey
 #
@@ -6,30 +6,23 @@
 
 """ Wrap a tree and add some simple partitioning functionality.  note
 that nameUnlabeledInternalNodes() and computeSubtreeRoots() need to be
-called (in that order) for anything to work...  
+called (in that order) for anything to work...
 
 """
 
-import os
-import xml.etree.ElementTree as ET
-import sys
 import math
-import copy
-
-from optparse import OptionParser
 
 from sonLib.nxtree import NXTree
-from sonLib.nxnewick import NXNewick
 
 import networkx as nx
 from networkx.algorithms.shortest_paths.weighted import dijkstra_path
 
 class MultiCactusTree(NXTree):
     self_suffix = "_self"
-    def __init__(self, tree = None, subtreeSize = 2):
+    def __init__(self, tree = None):
         if isinstance(tree, NXTree):
             NXTree.__init__(self, tree.nxDg)
-        else:   
+        else:
             NXTree.__init__(self, tree)
         # ids of all subtree roots for fast checking
         self.subtreeRoots = set()
@@ -38,9 +31,7 @@ class MultiCactusTree(NXTree):
         for node in self.breadthFirstTraversal():
             if self.hasName(node):
                 self.nameToId[self.getName(node)] = node
-        # size a subtree (in number of leaves)
-        self.subtreeSize = subtreeSize
-        
+
     # fill in unlabeled node ids with a breadth-first
     # traversal numbering from the root
     def nameUnlabeledInternalNodes(self, prefix = "Anc", startIdx = 0):
@@ -57,31 +48,23 @@ class MultiCactusTree(NXTree):
                 self.setName(node, "%s%s" % (prefix, str(count).zfill(width)))
                 count += 1
             self.nameToId[self.getName(node)] = node
-    
-    # identify roots of subclades in the tree and 
-    # add them to the self.claderoots dicitonary
-    def computeSubtreeRoots(self, root = None):
-        if root is None:
-            root = self.rootId
-            self.subtreeRoots = set()
-        assert root not in self.subtreeRoots
-        self.subtreeRoots.add(root)
-        leaves = self.getSubtreeLeaves(root)    
-        for subtreeLeaf in leaves:
-            if not self.isLeaf(subtreeLeaf):
-                self.computeSubtreeRoots(subtreeLeaf)
-        
-    # blindly read in the roots from given list of names 
+
+    # identify roots of subclades in the tree and
+    # add them to the self.subtreeRoots set
+    def computeSubtreeRoots(self):
+        self.subtreeRoots = set(node for node in self.breadthFirstTraversal() if not self.isLeaf(node))
+
+    # blindly read in the roots from given list of names
     def assignSubtreeRootNames(self, rootNames):
         self.subtreeRoots = set()
         for node in self.breadthFirstTraversal():
             if self.getName(node) in rootNames:
                 self.subtreeRoots.add(node)
             self.nameToId[self.getName(node)] = node
-                
+
     def getSubtreeRootNames(self):
         return [self.getName(x) for x in self.subtreeRoots]
-    
+
     # generate eall nodes beneath (and including) given
     # root
     def traverseSubtree(self, root, node):
@@ -111,8 +94,8 @@ class MultiCactusTree(NXTree):
                     if node not in nodeIds:
                         # This is a spurious node in the species tree,
                         # we can and should remove
-                        childEdge = cpy.out_edges(node, data=True)[0]
-                        parentEdge = cpy.in_edges(node, data=True)[0]
+                        childEdge = list(cpy.out_edges(node, data=True))[0]
+                        parentEdge = list(cpy.in_edges(node, data=True))[0]
                         child = childEdge[1]
                         childDist = childEdge[2]['weight']
                         parent = parentEdge[0]
@@ -123,7 +106,7 @@ class MultiCactusTree(NXTree):
                         graphWasModified = True
                         break
 
-        mcCpy = MultiCactusTree(cpy, 2)
+        mcCpy = MultiCactusTree(cpy)
         mcCpy.nameUnlabeledInternalNodes(prefix="thisPrefixShouldNeverAppear")
         mcCpy.computeSubtreeRoots()
         return mcCpy
@@ -132,6 +115,8 @@ class MultiCactusTree(NXTree):
     def getChildNames(self, name):
         id = self.nameToId[name]
         subtree = [i for i in self.traverseSubtree(id, id)]
+        # remove the root from the set of children
+        subtree.remove(id)
         names = [self.getName(i) for i in subtree]
         return names
 
@@ -140,10 +125,10 @@ class MultiCactusTree(NXTree):
         root = self.nameToId[name]
         subtree = [i for i in self.traverseSubtree(root, root)]
         cpy = self.nxDg.subgraph(subtree).copy()
-        mcCpy = MultiCactusTree(cpy, 2)
+        mcCpy = MultiCactusTree(cpy)
         mcCpy.assignSubtreeRootNames(self.getSubtreeRootNames())
         return mcCpy
-        
+
     # find the root of the subtree containing the given node
     # as leaf (slowly.. for nwo) (returns event name, not node id)
     def getSubtreeRoot(self, name):
@@ -157,31 +142,11 @@ class MultiCactusTree(NXTree):
                 return self.getName(parent)
             parent = self.getParent(parent)
         return None
-        
-    # find the leaves of af subtree, subject to 
-    # 1) number of leaves maximal but less than self.subtreeSize
-    # 2) if a node is returned, its sibling must me as well
-    def getSubtreeLeaves(self, node):
-        curLevel = []
-        nextLevel = self.getChildren(node)
-        while True:
-            curLevel = nextLevel
-            curLevel.sort()
-            nextLevel = []
-            for node in curLevel:
-                if self.isLeaf(node):
-                    nextLevel.append(node)
-                else:
-                    nextLevel += self.getChildren(node)
-            nextLevel.sort()
-            if len(nextLevel) > self.subtreeSize or curLevel == nextLevel:
-                break
-        return curLevel
-    
+
     # safe id to insert is current max + 1
     def getNextIndex(self):
         return sorted([i for i in self.breadthFirstTraversal()])[-1] + 1
-    
+
     # insert a new node above a specified node in the tree
     def insertAbove(self, node, newNode, newName = "", newWeight= None):
         parent = self.getParent(node)
@@ -201,8 +166,8 @@ class MultiCactusTree(NXTree):
             self.setWeight(newNode, node, newWeight)
         if len(newName) > 0:
             self.nameToId[newName] = newNode
-            
-    # insert a node with id (name_self) directly above 
+
+    # insert a node with id (name_self) directly above
     # every node in the tree
     # should be run after subtreeroots are computed (otherwise
     # won't work
@@ -222,10 +187,10 @@ class MultiCactusTree(NXTree):
                 assert self.self_suffix not in self.getName(node)
                 newName = self.getName(node) + self.self_suffix
                 self.insertAbove(node, newNode, newName, weight)
-                self.subtreeRoots.add(newNode) 
-    
+                self.subtreeRoots.add(newNode)
+
     # tack an outgroup onto the root
-    # if root is a leaf, we make a new root above. 
+    # if root is a leaf, we make a new root above.
     def addOutgroup(self, ogName, distance):
         # de-activating assert because new outgroup munging in
         # cactus_createMultiCactusProject will temporarility duplicate
@@ -245,8 +210,7 @@ class MultiCactusTree(NXTree):
     def setName(self, node, name):
         super(MultiCactusTree, self).setName(node, name)
         self.nameToId[name] = node
-    
+
     # map from event name to networkx node ID
     def getNodeId(self, name):
         return self.nameToId[name]
-        

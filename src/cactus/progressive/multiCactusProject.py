@@ -1,10 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #Copyright (C) 2011 by Glenn Hickey
 #
 #Released under the MIT license, see LICENSE.txt
 
-""" Basic interface to the multi cactus project xml file. 
+""" Basic interface to the multi cactus project xml file.
 
 """
 import xml.etree.ElementTree as ET
@@ -21,9 +21,9 @@ class MultiCactusProject:
         self.mcTree = None
         self.expMap = dict()
         self.expIDMap = None
-        self.inputSequences = []
-        self.inputSequenceIDs = None
-        self.outputSequenceIDMap = None
+        self.inputSequenceMap = {}
+        self.inputSequenceIDMap = {}
+        self.outputSequenceIDMap = {}
         self.configID = None
 
     def readXML(self, path):
@@ -39,17 +39,19 @@ class MultiCactusProject:
             self.expMap[nameElem] = pathElem
             if "experiment_id" in cactusPathElem.attrib:
                 self.expIDMap[nameElem] = cactusPathElem.attrib["experiment_id"]
-        self.inputSequences = xmlRoot.attrib["inputSequences"].split()
+        self.inputSequenceMap = dict(list(zip(xmlRoot.attrib["inputSequenceNames"].split(),
+                                         xmlRoot.attrib["inputSequences"].split())))
         if "inputSequenceIDs" in xmlRoot.attrib:
-            self.inputSequenceIDs = xmlRoot.attrib["inputSequenceIDs"].split()
+            self.inputSequenceIDMap = dict(list(zip(xmlRoot.attrib["inputSequenceIDNames"].split(),
+                                               xmlRoot.attrib["inputSequenceIDs"].split())))
         if "outputSequenceIDs" in xmlRoot.attrib:
-            self.outputSequenceIDMap = dict(zip(xmlRoot.attrib["outputSequenceIDs"].split(),
-                                                xmlRoot.attrib["outputSequenceNames"].split()))
+            self.outputSequenceIDMap = dict(list(zip(xmlRoot.attrib["outputSequenceNames"].split(),
+                                                xmlRoot.attrib["outputSequenceIDs"].split())))
 
-        logger.info("xmlRoot = %s" % ET.tostring(xmlRoot))
+        logger.info("xmlRoot = %s" % ET.tostring(xmlRoot, encoding='unicode'))
         if "configID" in xmlRoot.attrib:
             self.configID = xmlRoot.attrib["configID"]
-            
+
         self.mcTree.assignSubtreeRootNames(self.expMap)
 
     def writeXML(self, path):
@@ -57,7 +59,7 @@ class MultiCactusProject:
         treeElem = ET.Element("tree")
         treeElem.text = NXNewick().writeString(self.mcTree)
         xmlRoot.append(treeElem)
-        for name, expPath in self.expMap.items():
+        for name, expPath in list(self.expMap.items()):
             cactusPathElem = ET.Element("cactus")
             cactusPathElem.attrib["name"] = name
             cactusPathElem.attrib["experiment_path"] = expPath
@@ -65,68 +67,33 @@ class MultiCactusProject:
                 cactusPathElem.attrib["experiment_id"] = self.expIDMap[name]
             xmlRoot.append(cactusPathElem)
         #We keep track of all the input sequences at the top level
-        xmlRoot.attrib["inputSequences"] = " ".join(self.inputSequences)
-        if self.inputSequenceIDs:
-            xmlRoot.attrib["inputSequenceIDs"] = " ".join(self.inputSequenceIDs)
+        xmlRoot.attrib["inputSequences"] = " ".join(list(self.inputSequenceMap.values()))
+        xmlRoot.attrib["inputSequenceNames"] = " ".join(list(self.inputSequenceMap.keys()))
+        if self.inputSequenceIDMap:
+            xmlRoot.attrib["inputSequenceIDs"] = " ".join(list(self.inputSequenceIDMap.values()))
+            xmlRoot.attrib["inputSequenceIDNames"] = " ".join(list(self.inputSequenceIDMap.keys()))
         if self.outputSequenceIDMap:
-            xmlRoot.attrib["outputSequenceIDs"] = " ".join(self.outputSequenceIDMap.values())
-            xmlRoot.attrib["outputSequenceNames"] = " ".join(self.outputSequenceIDMap.keys())
+            xmlRoot.attrib["outputSequenceIDs"] = " ".join(list(self.outputSequenceIDMap.values()))
+            xmlRoot.attrib["outputSequenceNames"] = " ".join(list(self.outputSequenceIDMap.keys()))
         if self.configID:
             xmlRoot.attrib["configID"] = self.configID
 
         xmlFile = open(path, "w")
-        xmlString = ET.tostring(xmlRoot)
+        xmlString = ET.tostring(xmlRoot, encoding='unicode')
         xmlString = minidom.parseString(xmlString).toprettyxml()
         xmlFile.write(xmlString)
         xmlFile.close()
 
     def syncToFileStore(self, toil):
         self.expIDMap = dict()
-        for name, expPath in self.expMap.items():
+        for name, expPath in list(self.expMap.items()):
             expWrapper = ExperimentWrapper(ET.parse(expPath).getroot())
-            expWrapper.setConfigID(toil.importFile("file://" + expWrapper.getConfig()))
-            if expWrapper.getConstraintsFilePath():
-                expWrapper.setConstraintsID(toil.importFile("file://" + expWrapper.getConstraintsFilePath()))
+            expWrapper.setConfigID(toil.importFile("file://" + expWrapper.getConfigPath()))
             expWrapper.writeXML(expPath)
             self.expIDMap[name] = toil.importFile("file://" + expPath)
 
-
-    def getInputSequenceIDMap(self):
-        """Return a map between event names and sequence IDs.
-        """
-        inputSequenceMap = dict()
-        i = 0
-        for node in self.mcTree.postOrderTraversal():
-            if self.mcTree.isLeaf(node) is True:
-                inputSequenceMap[self.mcTree.getName(node)] = \
-                  self.inputSequenceIDs[i]
-                i += 1
-        assert i == len(self.inputSequenceIDs)
-        return inputSequenceMap
-
-    def getInputSequenceIDs(self):
-        """Get the set of input sequences for the multicactus tree
-        """
-        return self.inputSequenceIDs
-    
-    def getInputSequencePaths(self):
-        return self.inputSequences
-
-    def setOutputSequenceIDs(self, outputSequenceIDs):
-        self.outputSequenceIDMap = dict()
-        i = 0
-        for node in self.mcTree.postOrderTraversal():
-            if self.mcTree.isLeaf(node) is True:
-                self.outputSequenceIDMap[self.mcTree.getName(node)] = \
-                  outputSequenceIDs[i]
-                i += 1
-        assert i == len(outputSequenceIDs)
-
-    def getOutputSequenceIDMap(self):
-        return self.outputSequenceIDMap
-
     def getConfigPath(self):
-        return ExperimentWrapper(ET.parse(self.expMap.values()[0]).getroot()).getConfigPath()
+        return ExperimentWrapper(ET.parse(list(self.expMap.values())[0]).getroot()).getConfigPath()
 
     def setConfigID(self, configID):
         self.configID = configID
@@ -134,10 +101,5 @@ class MultiCactusProject:
     def getConfigID(self):
         return self.configID
 
-    def setInputSequenceIDs(self, inputSequenceIDs):
-        self.inputSequenceIDs = inputSequenceIDs
-
 if __name__ == '__main__':
     main()
-        
-    

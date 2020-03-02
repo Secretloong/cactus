@@ -81,7 +81,7 @@
 		realignArguments="--gapGamma 0.0 --matchGamma 0.9 --diagonalExpansion 4 --splitMatrixBiggerThanThis 10 --constraintDiagonalTrim 0 --alignAmbiguityCharacters --splitIndelsLongerThanThis 99"
 		compressFiles="1" 
 		overlapSize="10000" 
-		filterByIdentity="1" 
+		filterByIdentity="0" 
 		identityRatio="3" 
 		minimumDistance="0.01" 
 		minimumSequenceLengthForBlast="30"
@@ -93,12 +93,16 @@
 		minimumBlockDegree="2"
 		minimumIngroupDegree="1"
 		minimumOutgroupDegree="0"
-                minimumNumberOfSpecies="1"
-                alignmentFilter="relaxedSingleCopyOutgroup"
+        minimumNumberOfSpecies="1"
+        alignmentFilter="filterSecondariesByMultipleSpecies"
 		maxAdjacencyComponentSizeRatio="50"
 		minLengthForChromosome="1000000"
 		proportionOfUnalignedBasesForNewChromosome="0.8"
 		maximumMedianSequenceLengthBetweenLinkedEnds="1000"
+		runMapQFiltering="1"
+		minimumMapQValue="0.0" 
+		maxAlignmentsPerSite="5"
+		alpha="0.001"
 		lastzMemory="littleMemory"
 		lastzDisk="mediumDisk"
                 removeRecoverableChains="unequalNumberOfIngroupCopies"
@@ -200,7 +204,6 @@
 	<!-- makeScaffolds is a boolean that enables the bridging of uncertain adjacencies in an ancestral sequence providing the larger scale problem (parent flower in cactus), bridges the path. -->
 	<!-- phi is the coefficient used to control how much weight to place on an adjacency given its phylogenetic distance from the reference node -->
 	<reference 
-		buildReference="1"
 		matchingAlgorithm="blossom5" 
 		reference="reference" 
 		useSimulatedAnnealing="1" 
@@ -243,7 +246,6 @@
                         max_num_outgroups="3"
 		/>
 	 	<decomposition 
-	 		subtree_size="2" 
 	 		self_alignment="false" 
 	 		default_internal_node_prefix="Anc"
 			max_parallel_subtrees="50000"

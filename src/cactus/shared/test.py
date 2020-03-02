@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #Copyright (C) 2009-2011 by Benedict Paten (benedictpaten@gmail.com)
 #
@@ -7,8 +7,9 @@
 cactus workflow and the various utilities.
 """
 
-import random
 import os
+import pytest
+import random
 import xml.etree.ElementTree as ET
 
 from sonLib.bioio import logger
@@ -22,6 +23,9 @@ from sonLib.bioio import printBinaryTree
 from sonLib.bioio import system
 from sonLib.bioio import getRandomAlphaNumericString
 from sonLib.bioio import cigarWrite, PairwiseAlignment, AlignmentOperation
+from sonLib.bioio import TestStatus
+from sonLib.tree import makeRandomBinaryTree
+from sonLib.nxnewick import NXNewick
 
 from cactus.shared.common import runCactusWorkflow
 from cactus.shared.common import runCactusCheck
@@ -30,58 +34,53 @@ from sonLib.bioio import TestStatus
 
 from sonLib.tree import makeRandomBinaryTree
 
-from cactus.shared.common import runToilStats, runToilStatusAndFailIfNotComplete
+from cactus.shared.common import runToilStats
 
 from cactus.shared.experimentWrapper import DbElemWrapper
 from cactus.shared.experimentWrapper import ExperimentWrapper
-
-def silentOnSuccess(fn):
-    """
-    Redirect stdout, stderr for a test function, then output them if it fails.
-    """
-    def wrap(self):
-        # Pretty much ripped from the toil worker.py setup.
-        tempPath = getTempFile()
-        oldStdout = os.dup(1)
-        oldStderr = os.dup(2)
-
-        #Open the file to send stdout/stderr to.
-        logFh = os.open(tempPath, os.O_RDWR | os.O_CREAT | os.O_APPEND)
-
-        #Replace standard output with a descriptor for the log file
-        os.dup2(logFh, 1)
-
-        #Replace standard error with a descriptor for the log file
-        os.dup2(logFh, 2)
-        try:
-            fn(self)
-        except:
-            oldStdoutFile = os.fdopen(oldStdout, 'w')
-            logFile = os.fdopen(os.dup(logFh))
-            logFile.seek(0)
-            oldStdoutFile.write(logFile.read())
-            raise
-        finally:
-            # Close the descriptor we used to open the file
-            os.close(logFh)
-            # Reset stdout and stderr
-            os.dup2(oldStdout, 1)
-            os.dup2(oldStderr, 2)
-            os.remove(tempPath)
-    return wrap
 
 ###########
 #Stuff for setting up the experiment configuration file for a test
 ###########
 
-_GLOBAL_DATABASE_CONF_STRING = '<st_kv_database_conf type="kyoto_tycoon"><kyoto_tycoon in_memory="1" port="1978" snapshot="0"/></st_kv_database_conf>'
+# this should have {port} format string in it.
+_GLOBAL_DATABASE_CONF_STRING = '<st_kv_database_conf type="kyoto_tycoon"><kyoto_tycoon in_memory="1" port="{port}" snapshot="0"/></st_kv_database_conf>'
 _BATCH_SYSTEM = None
+
+_LOG_LEVEL = os.environ.get("CACTUS_TEST_LOG_LEVEL", None)
+
+# Assign ports by test module.  This allows us to run the tests in parallel
+# using make.
+
+portBase = 10110
+_TEST_MODULE_DATABASE_PORTS = {
+    "cactus.faces.cactus_fillAdjacenciesTest": portBase + 0,
+    "cactus.hal.cactus_halTest": portBase + 1,
+    "cactus.normalisation.cactus_normalisationTest": portBase + 2,
+    "cactus.phylogeny.cactus_phylogenyTest": portBase + 3,
+    "cactus.pipeline.cactus_workflowTest": portBase + 4,
+    "cactus.reference.cactus_referenceTest": portBase + 5,
+    "cactus.progressive.cactus_progressiveTest": portBase + 6,
+    "cactus.pipeline.cactus_evolverTest":  portBase + 7,
+}
 
 def getBatchSystem():
     return _BATCH_SYSTEM
 
 def getGlobalDatabaseConf():
     return _GLOBAL_DATABASE_CONF_STRING
+
+def getTestLogLevel():
+    return _LOG_LEVEL
+
+def getTestDatabasePort(testId):
+    "get the database port to use for the module containing this test"
+    # remove test class and function to get module
+    testMod = ".".join(testId.split('.')[0:-2])
+    port = _TEST_MODULE_DATABASE_PORTS.get(testMod)
+    if port is None:
+        raise Exception("No port defined for test module \"{}\", update {}".format(testMod, __file__))
+    return port
 
 def initialiseGlobalDatabaseConf(dataString):
     """Initialises the global database conf string which, if defined,
@@ -95,18 +94,27 @@ def initialiseGlobalBatchSystem(batchSystem):
     global _BATCH_SYSTEM
     assert batchSystem in ("singleMachine", "parasol", "gridEngine")
     _BATCH_SYSTEM = batchSystem
-    
-def getCactusWorkflowExperimentForTest(sequences, newickTreeString, outputDir, configFile=None,
-                                       constraints=None, progressive=False):
+
+def getCactusWorkflowExperimentForTest(testId, sequences, newickTreeString, outputDir, configFile=None,
+                                       constraints=None, progressive=False, reconstruct=True):
     """Wrapper to constructor of CactusWorkflowExperiment which additionally incorporates
     any globally set database conf.
     """
     halFile = os.path.join(outputDir, "test.hal")
     fastaFile = os.path.join(outputDir, "test.fa")
-    databaseConf = ET.fromstring(_GLOBAL_DATABASE_CONF_STRING) if _GLOBAL_DATABASE_CONF_STRING is not None else None
-    return ExperimentWrapper.createExperimentWrapper(sequences, newickTreeString, outputDir,
-                                    databaseConf=databaseConf, configFile=configFile,
-                                    halFile=halFile, fastaFile=fastaFile, constraints=constraints, progressive=progressive)
+    databaseConf = ET.fromstring(_GLOBAL_DATABASE_CONF_STRING.format(port=getTestDatabasePort(testId))) if _GLOBAL_DATABASE_CONF_STRING is not None else None
+    tree = NXNewick().parseString(newickTreeString, addImpliedRoots=False)
+    genomes = [tree.getName(id) for id in tree.postOrderTraversal() if tree.isLeaf(id)]
+    exp =  ExperimentWrapper.createExperimentWrapper(newickTreeString, genomes, outputDir,
+                                                     databaseConf=databaseConf, configFile=configFile,
+                                                     halFile=halFile, fastaFile=fastaFile, constraints=constraints, progressive=progressive)
+    for genome, sequence in zip(genomes, sequences):
+        print((genome, sequence))
+        exp.setSequenceID(genome, sequence)
+    exp.setRootGenome("reference")
+    if reconstruct:
+        exp.setRootReconstructed(True)
+    return exp
 
 ###############
 #Stuff for getting random inputs to a test
@@ -120,11 +128,12 @@ def getCactusInputs_random(regionNumber=0, tempDir=None,
     tree relating them. Each sequence is a assigned an event in this tree.
     """
     if sequenceNumber is None:
-        sequenceNumber = random.choice(xrange(30))
+        sequenceNumber = random.choice(list(range(30)))
     if avgSequenceLength is None:
-        avgSequenceLength = random.choice(xrange(1,3000))
+        avgSequenceLength = random.choice(list(range(1,3000)))
     if treeLeafNumber is None:
-        treeLeafNumber = random.choice(xrange(2, 4))
+        treeLeafNumber = random.choice(list(range(2, 4)))
+
     #Make tree
     binaryTree = makeRandomBinaryTree(treeLeafNumber)
     newickTreeString = printBinaryTree(binaryTree, includeDistances=True)
@@ -137,9 +146,9 @@ def getCactusInputs_random(regionNumber=0, tempDir=None,
             newickTreeLeafNames.append(tree.iD)
     fn(binaryTree)
     logger.info("Made random binary tree: %s" % newickTreeString)
-    
+
     sequenceDirs = []
-    for i in xrange(len(newickTreeLeafNames)):
+    for i in range(len(newickTreeLeafNames)):
         seqDir = getTempDirectory(rootDir=tempDir)
         sequenceDirs.append(seqDir)
 
@@ -148,11 +157,10 @@ def getCactusInputs_random(regionNumber=0, tempDir=None,
     #Random sequences and species labelling
     sequenceFile = None
     fileHandle = None
-    parentSequence = getRandomSequence(length=random.choice(xrange(1, 2*avgSequenceLength)))[1]
+    parentSequence = getRandomSequence(length=random.choice(list(range(1, 2*avgSequenceLength))))[1]
     emptySequenceDirs = set(sequenceDirs)
     i = 0
     while i < sequenceNumber or len(emptySequenceDirs) > 0:
-        #for i in xrange(sequenceNumber):
         if sequenceFile == None:
             if random.random() > 0.5: #Randomly choose the files to be attached or not
                 suffix = ".fa.complete"
@@ -164,8 +172,8 @@ def getCactusInputs_random(regionNumber=0, tempDir=None,
             sequenceFile = getTempFile(rootDir=sequenceDir, suffix=suffix)
             fileHandle = open(sequenceFile, 'w')
         if random.random() > 0.8: #Get a new root sequence
-            parentSequence = getRandomSequence(length=random.choice(xrange(1, 2*avgSequenceLength)))[1]
-        sequence = mutateSequence(parentSequence, distance=random.random()*0.5)
+            parentSequence = getRandomSequence(length=random.choice(list(range(1, 2*avgSequenceLength))))[1]
+        sequence = mutateSequence(parentSequence, distance=random.random()*0.25)
         name = getRandomAlphaNumericString(15)
         if random.random() > 0.5:
             sequence = reverseComplement(sequence)
@@ -179,7 +187,7 @@ def getCactusInputs_random(regionNumber=0, tempDir=None,
         fileHandle.close()
 
     logger.info("Made %s sequences in %s directories" % (sequenceNumber, len(sequenceDirs)))
-    
+
     return sequenceDirs, newickTreeString
 
 def getFastasFromSequence(sequenceDirs):
@@ -197,7 +205,7 @@ def makeRandomConstraints(fastaSeqs):
     #Now make the fake alignments and write to file
     constraints = []
     if len(fastaSeqs) > 0:
-        for i in xrange(random.randint(0, 1000)):
+        for i in range(random.randint(0, 1000)):
             name1, sequence1 = random.choice(fastaSeqs)
             name2, sequence2 = random.choice(fastaSeqs)
             if len(sequence1) == 0 or len(sequence2) == 0:
@@ -209,8 +217,8 @@ def makeRandomConstraints(fastaSeqs):
                 return start+1, start, False
             start1, end1, strand1 = getRandomInterval(sequence1)
             start2, end2, strand2 = getRandomInterval(sequence2)
-            constraints.append(PairwiseAlignment(name1, start1, end1, strand1, 
-                                                  name2, start2, end2, strand2, 
+            constraints.append(PairwiseAlignment(name1, start1, end1, strand1,
+                                                  name2, start2, end2, strand2,
                                                   1000, [ AlignmentOperation(PairwiseAlignment.PAIRWISE_MATCH, 1, 1000)]))
     return constraints
 
@@ -235,12 +243,12 @@ def getInputs(path, sequenceNames):
     seqPath = os.path.join(TestStatus.getPathToDataSets(), path)
     sequences = [ os.path.join(seqPath, sequence) for sequence in sequenceNames ] #Same order as tree
     newickTreeString = parseNewickTreeFile(os.path.join(path, "tree.newick"))
-    return sequences, newickTreeString  
+    return sequences, newickTreeString
 
 def getCactusInputs_blanchette(regionNumber=0, tempDir=None):
     """Gets the inputs for running cactus_workflow using a blanchette simulated region
     (0 <= regionNumber < 50).
-    
+
     Requires setting SON_TRACE_DATASETS variable and having access to datasets.
     """
     assert regionNumber >= 0
@@ -277,7 +285,7 @@ def getCactusInputs_funkyHeaderNames(regionNumber=0, tempDir=None):
 def getCactusInputs_encode(regionNumber=0, tempDir=None):
     """Gets the inputs for running cactus_workflow using an Encode pilot project region.
      (0 <= regionNumber < 15).
-    
+
     Requires setting SON_TRACE_DATASETS variable and having access to datasets.
     """
     assert regionNumber >= 0
@@ -292,7 +300,7 @@ def getCactusInputs_encode(regionNumber=0, tempDir=None):
 def getCactusInputs_chromosomeX(regionNumber=0, tempDir=None):
     """Gets the inputs for running cactus_workflow using an some mammlian chromosome
     X's.
-    
+
     Requires setting SON_TRACE_DATASETS variable and having access to datasets.
     """
     chrXPath = os.path.join(TestStatus.getPathToDataSets(), "chr_x")
@@ -300,101 +308,120 @@ def getCactusInputs_chromosomeX(regionNumber=0, tempDir=None):
     newickTreeString = parseNewickTreeFile(os.path.join(chrXPath, "newickTree.txt"))
     return sequences, newickTreeString
 
-def runWorkflow_TestScript(sequences, newickTreeString, 
+def getCactusInputs_evolverMammals():
+    """Gets the inputs for running cactus_workflow using some simulated, half megabase mammlian chromosomes.
+
+    Requires setting SON_TRACE_DATASETS variable and having access to datasets.
+    """
+    evolverPath = os.path.join(TestStatus.getPathToDataSets(), "evolver", "mammals", "loci1")
+    sequences = [ os.path.join(evolverPath, seqFile) for seqFile in ("simHuman.chr6", "simMouse.chr6", "simRat.chr6", "simCow.chr6", "simDog.chr6") ]
+    newickTreeString = parseNewickTreeFile(os.path.join(evolverPath, "tree.newick"))
+    return sequences, newickTreeString
+
+def getCactusInputs_evolverPrimates():
+    """Gets the inputs for running cactus_workflow using some simulated, half megabase primate chromosomes.
+
+    Requires setting SON_TRACE_DATASETS variable and having access to datasets.
+    """
+    evolverPath = os.path.join(TestStatus.getPathToDataSets(), "evolver", "primates", "loci1")
+    sequences = [ os.path.join(evolverPath, seqFile) for seqFile in ("simHuman.chr6", "simChimp.chr6", "simGorilla.chr6" , "simOrang.chr6") ]
+    newickTreeString = parseNewickTreeFile(os.path.join(evolverPath, "tree.newick"))
+    return sequences, newickTreeString
+
+def runWorkflow_TestScript(testId, sequences, newickTreeString,
                            outputDir=None,
                            batchSystem="single_machine",
-                           buildAvgs=False, 
-                           buildReference=False,
+                           buildAvgs=False,
                            buildHal=False,
                            buildFasta=False,
                            configFile=None,
                            buildToilStats=False,
                            constraints=None,
                            progressive=False,
-                           cactusWorkflowFunction=runCactusWorkflow):
+                           cactusWorkflowFunction=runCactusWorkflow,
+                           logLevel=None):
     """Runs the workflow and various downstream utilities.
+    The testId parameter is used to allocate a unique port so that tests
+    can run in parallel.
     """
     logger.info("Running cactus workflow test script")
     logger.info("Got the following sequence dirs/files: %s" % " ".join(sequences))
     logger.info("Got the following tree %s" % newickTreeString)
-    
+
     #Setup the output dir
     assert outputDir != None
     logger.info("Using the output dir: %s" % outputDir)
-    
+
     #Setup the flower disk.
-    experiment = getCactusWorkflowExperimentForTest(sequences, newickTreeString, 
+    experiment = getCactusWorkflowExperimentForTest(testId, sequences, newickTreeString,
                                                     outputDir=outputDir,
                                                     configFile=configFile, constraints=constraints,
                                                     progressive=progressive)
     experimentFile = os.path.join(outputDir, "experiment.xml")
     experiment.writeXML(experimentFile)
     logger.info("The experiment file %s\n" % experimentFile)
-   
+
     #Setup the job tree dir.
     toilDir = os.path.join(outputDir, "toil")
     logger.info("Got a job tree dir for the test: %s" % toilDir)
-    
+
     #Run the actual workflow
-    cactusWorkflowFunction(experimentFile, toilDir, 
+    cactusWorkflowFunction(experimentFile, toilDir,
                            batchSystem=batchSystem, buildAvgs=buildAvgs,
-                           buildReference=buildReference,
                            buildHal=buildHal,
                            buildFasta=buildFasta,
                            toilStats=buildToilStats,
-                           logLevel="DEBUG")
+                           logLevel=logLevel)
     logger.info("Ran the the workflow")
-    
     #Now run various utilities..
     if buildToilStats:
         toilStatsFile = os.path.join(outputDir, "toilStats.xml")
         runToilStats(toilDir, toilStatsFile)
-        
+
     #Now remove everything we generate
-    system("rm -rf %s %s" % (toilDir, experimentFile))   
-    
+    system("rm -rf %s %s" % (toilDir, experimentFile))
+
     #Return so calling function can cleanup
     return experiment
-        
-testRestrictions_NotShort = ()
-        
-def runWorkflow_multipleExamples(inputGenFunction,
-                                 testNumber=1, 
-                                 testRestrictions=(TestStatus.TEST_SHORT, TestStatus.TEST_MEDIUM, \
-                                                   TestStatus.TEST_LONG, TestStatus.TEST_VERY_LONG,),
-                                 inverseTestRestrictions=False,
+
+def runWorkflow_multipleExamples(testId, inputGenFunction,
+                                 testNumber=1,
                                  batchSystem="single_machine",
-                                 buildAvgs=False, buildReference=False,
-                                 configFile=None, buildToilStats=False, 
+                                 buildAvgs=False,
+                                 configFile=None, buildToilStats=False,
                                  useConstraints=False,
                                  cactusWorkflowFunction=runCactusWorkflow,
+                                 logLevel=None,
                                  buildHal=False,
                                  buildFasta=False,
                                  progressive=False):
     """A wrapper to run a number of examples.
+    The testId parameter is used to allocate a unique port so that tests
+    can run in parallel.
     """
-    if (inverseTestRestrictions and TestStatus.getTestStatus() not in testRestrictions) or \
-        (not inverseTestRestrictions and TestStatus.getTestStatus() in testRestrictions):
-        for test in xrange(testNumber): 
-            tempDir = getTempDirectory(os.getcwd())
-            if useConstraints:
-                sequences, newickTreeString, constraints = inputGenFunction(regionNumber=test, tempDir=tempDir)
-            else:
-                sequences, newickTreeString = inputGenFunction(regionNumber=test, tempDir=tempDir)
-                constraints = None
-            runWorkflow_TestScript(sequences, newickTreeString,
-                                   outputDir=tempDir,
-                                   batchSystem=batchSystem,
-                                   buildAvgs=buildAvgs, buildReference=buildReference,
-                                   buildHal=buildHal,
-                                   buildFasta=buildFasta,
-                                   configFile=configFile,
-                                   buildToilStats=buildToilStats,
-                                   constraints=constraints,
-                                   progressive=progressive,
-                                   cactusWorkflowFunction=cactusWorkflowFunction)
-            system("rm -rf %s" % tempDir)
-            logger.info("Finished random test %i" % test)
+    if logLevel is None:
+        logLevel = _LOG_LEVEL
+    for test in range(testNumber):
+        tempDir = getTempDirectory(os.getcwd())
+        if useConstraints:
+            sequences, newickTreeString, constraints = inputGenFunction(regionNumber=test, tempDir=tempDir)
+        else:
+            sequences, newickTreeString = inputGenFunction(regionNumber=test, tempDir=tempDir)
+            constraints = None
+        runWorkflow_TestScript(testId, sequences, newickTreeString,
+                               outputDir=tempDir,
+                               batchSystem=batchSystem,
+                               buildAvgs=buildAvgs,
+                               buildHal=buildHal,
+                               buildFasta=buildFasta,
+                               configFile=configFile,
+                               buildToilStats=buildToilStats,
+                               constraints=constraints,
+                               progressive=progressive,
+                               cactusWorkflowFunction=cactusWorkflowFunction,
+                               logLevel=logLevel)
+        system("rm -rf %s" % tempDir)
+        logger.info("Finished random test %i" % test)
 
 def checkCigar(filename):
     lines = 0

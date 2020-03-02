@@ -1,6 +1,7 @@
-import unittest
 import os
-from sonLib.bioio import system
+import pytest
+import shutil
+import unittest
 from sonLib.bioio import TestStatus
 from sonLib.bioio import fastaRead
 from sonLib.bioio import getTempDirectory
@@ -10,6 +11,8 @@ from toil.job import Job
 """Base case used for testing the preprocessor and lastz repeat masking
 """
 
+@pytest.mark.blast
+@TestStatus.needsTestData
 class TestCase(unittest.TestCase):
     def setUp(self):
         unittest.TestCase.setUp(self)
@@ -24,14 +27,14 @@ class TestCase(unittest.TestCase):
 
     def tearDown(self):
         unittest.TestCase.tearDown(self)
-        system("rm -rf %s" % self.tempDir)
+        shutil.rmtree(self.tempDir)
 
     def checkSequenceSetsEqualModuloSoftMasking(self, sequences1, sequences2):
-        self.assertEquals(sequences1.keys(), sequences2.keys())
-        for seqName in sequences1.keys():
+        self.assertEqual(list(sequences1.keys()), list(sequences2.keys()))
+        for seqName in list(sequences1.keys()):
             sequence1 = sequences1[seqName]
             sequence2 = sequences2[seqName]
-            self.assertEquals(sequence1.upper(), sequence2.upper())
+            self.assertEqual(sequence1.upper(), sequence2.upper())
 
 def getSequences(sequenceFile):
     sequences = {}
@@ -43,9 +46,9 @@ def getSequences(sequenceFile):
 
 def getMaskedBases(sequences):
     maskedBases = set()
-    for header in sequences.keys():
+    for header in list(sequences.keys()):
         sequence = sequences[header]
-        for i in xrange(len(sequence)):
+        for i in range(len(sequence)):
             base = sequence[i]
             if base.upper() != base or base == 'N':
                 maskedBases.add((header, i, base))
